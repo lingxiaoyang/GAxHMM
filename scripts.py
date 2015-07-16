@@ -31,19 +31,22 @@ def groundtruths2mlf(groundtruthsdir, mlf):
             lines.append('"*/{0}.lab"'.format(name))
             with open(groundtruthsdir + os.sep + filename, 'r') as f:
                 prev = -1.0 # seconds
+
                 for line in f:
                     things = line.split()
                     if len(things) == 3:
                         start = float(things[0])
                         end = float(things[1])
-                        if start - prev > 0.1:  # 100ms
+                        if start - prev < 0.20 and prev >= 0:  # <200ms SP
+                            lines.append('{0} {1} SP'.format(toHTKTime(prev), toHTKTime(start)))
+                            lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
+                        else:    # >200ms SIL
                             if prev < 0:
                                 prev = 0
-                            lines.append('{0} {1} UNVOICED'.format(toHTKTime(prev), toHTKTime(start)))
-                        lines.append('{0} {1} VOICED'.format(toHTKTime(start), toHTKTime(end)))
+                            lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
+                            lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
                         prev = end
-                #lines.append('{0} {1} UNVOICED'.format(toHTKTime(end), toHTKTime(end+2)))
-                lines.append("UNVOICED")
+                lines.append("SIL")
                 lines.append(".")
     with open(mlf, "w") as g:
         g.write("\n".join(lines)+"\n")

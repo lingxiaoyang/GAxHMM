@@ -1,9 +1,6 @@
 import glob
 import os
-import lxml.etree
-from scipy.signal import butter, lfilter, freqs
 from pylab import *
-import aubio
 
 
 FEATURES = {
@@ -16,6 +13,7 @@ FEATURES = {
 
 
 rcParams['figure.figsize'] = 8, 12
+
 
 def groundtruths2mlf(groundtruthsdir, mlf):
 
@@ -52,164 +50,49 @@ def groundtruths2mlf(groundtruthsdir, mlf):
         g.write("\n".join(lines)+"\n")
 
 
-
-
-def groundtruths2mlf_onset(groundtruthsdir, mlf):
+def groundtruths2mlf_separateNotes(groundtruthsdir, mlf, monophonesfile=None):
 
     def toHTKTime(second):
         ten_million = 10000000
         return int(second * ten_million)
 
     lines = ["#!MLF!#"]
+    note_count = 0
+
     for filename in os.listdir(groundtruthsdir):
         if filename.endswith('.txt'):
             name = filename.split('.')[0]
             print name
             lines.append('"*/{0}.lab"'.format(name))
-
-            starts = []
             with open(groundtruthsdir + os.sep + filename, 'r') as f:
+                prev = -1.0 # seconds
+
                 for line in f:
                     things = line.split()
                     if len(things) == 3:
+                        note_count += 1
                         start = float(things[0])
-                        starts.append(start)
-
-            prev = 0.0
-            ONSET_LIM = 0.05 # sec
-            for start in starts:
-                s1 = start - ONSET_LIM
-                s2 = start + ONSET_LIM
-                if s1 > prev:
-                    lines.append('{0} {1} NOT_ONSET'.format(toHTKTime(prev), toHTKTime(s1)))
-                    lines.append('{0} {1} ONSET'.format(toHTKTime(s1), toHTKTime(s2)))
-                    prev = s2
-            lines.append("NOT_ONSET")
-            lines.append(".")
+                        end = float(things[1])
+                        if start - prev < 0.20 and prev >= 0:  # <200ms SP
+                            lines.append('{0} {1} SP'.format(toHTKTime(prev), toHTKTime(start)))
+                            lines.append('{0} {1} NOTE_{2}'.format(toHTKTime(start), toHTKTime(end), note_count))
+                        else:    # >200ms SIL
+                            if prev < 0:
+                                prev = 0
+                            lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
+                            lines.append('{0} {1} NOTE_{2}'.format(toHTKTime(start), toHTKTime(end), note_count))
+                        prev = end
+                lines.append("SIL")
+                lines.append(".")
     with open(mlf, "w") as g:
         g.write("\n".join(lines)+"\n")
 
-
-
-
-
-def ACEsinglefeature2floats(ace_path, outdir, ext):
-    tree = lxml.etree.parse(ace_path)
-    data_sets = tree.xpath(r'//data_set')
-    for ds in data_sets:
-        dsid = ds.find(r'.//data_set_id')
-        infile = os.path.basename(dsid.text)
-        basename = infile.split('.')[0]
-        outfile = outdir + os.sep + basename + '.' + ext
-        print outfile
-
-        vs = ds.xpath(r'.//v')
-        with open(outfile, 'w') as g:
-            for v in vs:
-                g.write(v.text+'\n')
-
-def ACEmfccs2accents(ace_path, outdir, ext):
-    tree = lxml.etree.parse(ace_path)
-    data_sets = tree.xpath(r'//data_set')
-    for ds in data_sets:
-        dsid = ds.find(r'.//data_set_id')
-        infile = os.path.basename(dsid.text)
-        basename = infile.split('.')[0]
-        outfile = outdir + os.sep + basename + '.' + ext
-        print outfile
-
-        sections = ds.findall(".//section")
-        mfccs = zeros((len(sections), 35), dtype=float32)
-
-        for i, section in enumerate(sections):
-            vs = section.findall(".//v")[1:]  # ignore 0-th MFCC
-            for j, v in enumerate(vs):
-                mfccs[i, j] = float32(v.text)
-
-        for i in range(len(sections)):
-            mfccs[i, :] = butter_lowpass_filter(mfccs[i, :], 20, 100)
-        ad_mfccs = abs(diff(mfccs, axis=0))
-        s = sum(ad_mfccs, axis=1)
-
-
-        #plot(s)
-        #show()
-
-        with open(outfile, 'w') as g:
-            for n in s:
-                g.write(str(n)+'\n')
-
-def butter_lowpass(cutOff, fs, order=5):
-    nyq = 0.5 * fs
-    normalCutoff = cutOff / nyq
-    b, a = butter(order, normalCutoff, btype='low', analog=False)
-    return b, a
-
-def butter_lowpass_filter(data, cutOff, fs, order=4):
-    b, a = butter_lowpass(cutOff, fs, order=order)
-    y = lfilter(b, a, data)
-    return y
-
-def compose_data(basename):
-    # compose delta-pitch, energy, voicing, accent
-    # delta-pitch: delta calculation: (use ratio)
-    ## if 0.0 x.x 0.0   it's 0
-    ## if 0.0 x.x x.x   it's the ratio
-    ## if x.x x.x 0.0   same: the ratio
-    ## if x.x x.x x.x   it's the square root of the ratio of left and right.
-
-    print basename
-    f_pit = basename+".pit"
-    f_eng = basename+".eng"
-    f_cfd = basename+".cfd"
-    f_acc = basename+".acc"
-
-    with open(f_pit) as f:
-        l = f.read().split()
-        pits = map(float32, l)
-    with open(f_eng) as f:
-        l = f.read().split()
-        engs = map(float32, l)
-    with open(f_cfd) as f:
-        l = f.read().split()
-        cfds = map(float32, l)
-    with open(f_acc) as f:
-        l = f.read().split()
-        accs = map(float32, l)
-
-    #clean_pits = []
-    #for p in pits:
-    #    if p < 70 or p > 880:
-    #        clean_pits.append(0.0)
-    #    else:
-    #        clean_pits.append(p)
-    clean_pits = pits
-
-    dpits = []
-    ZERO = -1e10
-    for i in range(len(clean_pits)):
-        if clean_pits[i] == 0:
-            dpits.append(ZERO)
-        elif (i == 0 or clean_pits[i-1] == 0) and (i == len(clean_pits)-1 or clean_pits[i+1] == 0):
-            dpits.append(ZERO)
-        elif (i == 0 or clean_pits[i-1] == 0):
-            d = clean_pits[i+1] / clean_pits[i]
-            dpits.append(d)
-        elif (i == len(clean_pits)-1 or clean_pits[i+1] == 0):
-            d = clean_pits[i] / clean_pits[i-1]
-            dpits.append(d)
-        else:
-            d = sqrt(clean_pits[i+1] / clean_pits[i-1])
-            dpits.append(d)
-
-    data = zip(dpits, engs, cfds, accs)
-    print len(data)
-
-    f_out = basename+'.cmp'
-    with open(f_out, 'w') as g:
-        for frame in data:
-            for ele in frame:
-                g.write(str(ele) + '\n')
+    if monophonesfile:
+        with open(monophonesfile, 'w') as g:
+            g.write('SIL\n')
+            g.write('SP\n')
+            for i in range(note_count):
+                g.write("{0}\n".format(i+1))
 
 def plot_hmmdefs(hmmdef_file):
     with open(hmmdef_file) as f:
@@ -272,7 +155,7 @@ def plot_hmmdefs(hmmdef_file):
         show()
 
 
-def split_test_mlf(mlf_file, test_dir, no_pitch=False):
+def split_test_mlf(mlf_file, test_dir, ext):
     with open(mlf_file) as f:
         content = f.read()
         files = content.split('.\n')
@@ -287,18 +170,30 @@ def split_test_mlf(mlf_file, test_dir, no_pitch=False):
 
         contents = []
         for line in lines[1:]:
-            _, _, is_voiced = line.split()[:3]
-            if is_voiced == 'VOICED':
-                contents.append(line)
-        if no_pitch:
-            def transform(line):
-                start, end = line.split()[:2]
-                start = str(float(start) / 10000000.0)
-                end = str(float(end) / 10000000.0)
-                return start + ' ' + end + ' 1'
-            contents = map(transform, contents)
-        with open(test_dir + os.sep + basename + '.lab', 'w') as g:
+            if len(line.split()) >= 3:
+                _, _, is_voiced = line.split()[:3]
+                if is_voiced == 'NOTE':
+                    contents.append(line)
+
+        def transform(line):
+            start, end = line.split()[:2]
+            start = str(float(start) / 10000000.0)
+            end = str(float(end) / 10000000.0)
+            return start + ' ' + end + ' 1'
+        contents = map(transform, contents)
+        with open(test_dir + os.sep + basename + '.' + ext, 'w') as g:
             g.write('\n'.join(contents)+'\n')
+
+def tony_format_to_evaluation_framework(tony_format_dir, output_dir, ext):
+    for filename in os.listdir(tony_format_dir):
+        basename = filename.split('.')[0]
+        print basename
+        with open(tony_format_dir + os.sep + filename, 'r') as f:
+            with open(output_dir + os.sep + basename + "." + ext, 'w') as g:
+                for line in f:
+                    start, pit, dur = line.split()[:3]
+                    g.write("{0} {1} {2}\n".format(start, float(start)+float(dur), 1))
+
 
 def extract_notes_from_onsets(labfile, pitfile, outfile):
     print labfile

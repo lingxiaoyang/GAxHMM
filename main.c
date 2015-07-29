@@ -53,6 +53,14 @@
 #define FILE_TRAIN           "train.scp"
 #define FILE_TEST            "test.scp"
 
+#define NOTE_NSTATES       3
+#define SIL_NSTATES        2
+#define SP_NSTATES         1
+
+#define NOTE_NMIXES       2
+#define SIL_NMIXES        1
+#define SP_NMIXES         1
+
 int NFEAT;
 int mpi_tasks, mpi_rank;
 
@@ -407,7 +415,7 @@ Objective(GAGenome &g) {
 
   // make proto  note
   std::ofstream fproto_note((working_dir+"/hmm0/proto_note").c_str());
-  fproto_note << make_proto(3, 5, msdInfo, genome);
+  fproto_note << make_proto(NOTE_NSTATES, NOTE_NMIXES, msdInfo, genome);
   fproto_note.close();
 
   // HCompV
@@ -438,7 +446,7 @@ Objective(GAGenome &g) {
 
   // make proto  sil
   std::ofstream fproto_sil((working_dir+"/hmm0/proto_sil").c_str());
-  fproto_sil << make_proto(3, 2, msdInfo, genome);
+  fproto_sil << make_proto(SIL_NSTATES, SIL_NMIXES, msdInfo, genome);
   fproto_sil.close();
 
   // HCompV
@@ -472,7 +480,7 @@ Objective(GAGenome &g) {
 
   // make proto
   std::ofstream fproto_sp((working_dir+"/hmm0/proto_sp").c_str());
-  fproto_sp << make_proto(1, 1, msdInfo, genome);
+  fproto_sp << make_proto(SP_NSTATES, SP_NMIXES, msdInfo, genome);
   fproto_sp.close();
 
   // HCompV

@@ -50,20 +50,19 @@ def groundtruths2mlf(groundtruthsdir, mlf):
         g.write("\n".join(lines)+"\n")
 
 
-def groundtruths2mlf_separateNotes(groundtruthsdir, mlf, monophonesfile=None):
+def groundtruths2labs(groundtruthsdir, outdir):
 
     def toHTKTime(second):
         ten_million = 10000000
         return int(second * ten_million)
 
-    lines = ["#!MLF!#"]
-    note_count = 0
-
     for filename in os.listdir(groundtruthsdir):
         if filename.endswith('.txt'):
             name = filename.split('.')[0]
             print name
-            lines.append('"*/{0}.lab"'.format(name))
+
+            lines = []
+            note_count = 0
             with open(groundtruthsdir + os.sep + filename, 'r') as f:
                 prev = -1.0 # seconds
 
@@ -75,24 +74,21 @@ def groundtruths2mlf_separateNotes(groundtruthsdir, mlf, monophonesfile=None):
                         end = float(things[1])
                         if start - prev < 0.20 and prev >= 0:  # <200ms SP
                             lines.append('{0} {1} SP'.format(toHTKTime(prev), toHTKTime(start)))
-                            lines.append('{0} {1} NOTE_{2}'.format(toHTKTime(start), toHTKTime(end), note_count))
+                            lines.append('{0} {1} NOTE_{2}_{3}'.format(toHTKTime(start), toHTKTime(end), name, note_count))
                         else:    # >200ms SIL
                             if prev < 0:
                                 prev = 0
                             lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
-                            lines.append('{0} {1} NOTE_{2}'.format(toHTKTime(start), toHTKTime(end), note_count))
+                            lines.append('{0} {1} NOTE_{2}_{3}'.format(toHTKTime(start), toHTKTime(end), name, note_count))
                         prev = end
                 lines.append("SIL")
-                lines.append(".")
-    with open(mlf, "w") as g:
-        g.write("\n".join(lines)+"\n")
+                #lines.append(".")
+            with open(outdir + os.sep + name + ".lab", "w") as g:
+                g.write("\n".join(lines)+"\n")
+            with open(outdir + os.sep + name + ".monos", "w") as g:
+                for i in range(note_count):
+                    g.write("NOTE_{0}_{1}\n".format(name, i+1))
 
-    if monophonesfile:
-        with open(monophonesfile, 'w') as g:
-            g.write('SIL\n')
-            g.write('SP\n')
-            for i in range(note_count):
-                g.write("{0}\n".format(i+1))
 
 def plot_hmmdefs(hmmdef_file):
     with open(hmmdef_file) as f:

@@ -1,0 +1,15 @@
+<pre class="code">
+<span class="srcline"><span class="lineno"><a href="91,1" id="srcline1"> 1</a></span><span class="line"><span class="keyword">function</span> <span class="var type1" id="S2T41U3">c</span> = setdiff_simple(<span class="var type1" id="S3T41U6">a</span>,<span class="var type1" id="S4T41U7">b</span>)</span></span>
+<span class="srcline"><span class="lineno"><a href="91,2" id="srcline2"> 2</a></span><span class="line"><span class="comment">% ONLY SUPPORT TWO IN ARGS and ONE OUT ARG only FOR ROW VEC</span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,3" id="srcline3"> 3</a></span><span class="line"><span class="comment">%SETDIFF Set difference.</span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,4" id="srcline4"> 4</a></span><span class="line"><span class="comment">%   C = SETDIFF(A,B) for vectors A and B, returns the values in A that </span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,5" id="srcline5"> 5</a></span><span class="line"><span class="comment">%   are not in B with no repetitions. C will be sorted.</span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,6" id="srcline6"> 6</a></span><span class="line"></span></span>
+<span class="srcline"><span class="lineno"><a href="91,7" id="srcline7"> 7</a></span><span class="line">    <span class="comment">% Call ISMEMBER to determine list of non-matching elements of A.</span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,8" id="srcline8"> 8</a></span><span class="line">    <span class="mxinfo " id="T13:U4"><span class="var type1" id="S5T13U10">logUA</span> = <span class="mxinfo " id="T13:U6">~(<span class="mxinfo " id="T13:U7">ismember(<span class="var type1" id="S3T41U15">a</span>,<span class="var type1" id="S4T41U16">b</span>)</span>)</span></span>;</span></span>
+<span class="srcline"><span class="lineno"><a href="91,9" id="srcline9"> 9</a></span><span class="line">    <span class="mxinfo " id="T41:U10"><span class="var type1" id="S2T41U19">c</span> = <span class="mxinfo " id="T41:U12"><span class="var type1" id="S3T41U21">a</span>(<span class="var type1" id="S5T13U22">logUA</span>)</span></span>;</span></span>
+<span class="srcline"><span class="lineno"><a href="91,10" id="srcline10">10</a></span><span class="line">    </span></span>
+<span class="srcline"><span class="lineno"><a href="91,11" id="srcline11">11</a></span><span class="line">    <span class="comment">% Call UNIQUE to remove duplicates from list of non-matches.</span></span></span>
+<span class="srcline"><span class="lineno"><a href="91,12" id="srcline12">12</a></span><span class="line">    <span class="mxinfo " id="T41:U15"><span class="var type1" id="S2T41U25">c</span> = <span class="mxinfo " id="T41:U17">unique(<span class="var type1" id="S2T41U28">c</span>)</span></span>;</span></span>
+<span class="srcline"><span class="lineno"><a href="91,13" id="srcline13">13</a></span><span class="line"><span class="keyword">end</span></span></span>
+</pre>

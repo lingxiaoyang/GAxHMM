@@ -1,1 +1,1 @@
-(SIL {(NOTE {<SP NOTE>} SIL)})
+(SIL {<(<NOTE> SIL)>})

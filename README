@@ -1,0 +1,5 @@
+1. Run script.py->groundtruth2mlf to generate groundtruth.mlf
+2. Modify parameters in main.c and main_evaluation.cpp
+3. Compile C++ programs by executing compile_mp.sh and compile_evaluation.sh
+4. Run main.py with an execution name
+5. Analyze results

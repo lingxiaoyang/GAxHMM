@@ -12,6 +12,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <exception>
+#include <algorithm>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -29,8 +30,8 @@
 
 #define cout STD_COUT
 
-#define POPSIZE  100
-#define NGEN     300
+#define POPSIZE  4
+#define NGEN     2
 #define PMUT     0.001
 #define PCROSS   0.9
 
@@ -41,8 +42,7 @@
 #define HOPSIZE            0.01   // secs
 
 
-#define NFOLD_GA        3         // n-fold cross-validation for GA training (upper level)
-#define NFOLD_HMM       3         // n-fold cross-validation for HMM training(lower level)
+#define NFOLD        3         // n-fold cross-validation for splitting the given training set.
 
 #define FILE_MSDINFO         "train/msdInfo"
 #define FILE_GROUNDTRUTH     "groundtruth.mlf"
@@ -50,37 +50,61 @@
 #define FILE_GRAMMAR         "grammar"
 #define FILE_WDNET           "wdnet"
 #define FILE_MONOPHONES      "monophones"
-#define FILE_TRAIN           "train.scp"
-#define FILE_TEST            "test.scp"
+
+std::string FILE_TRAIN = "";
+std::vector<std::string> train_set;
 
 #define NOTE_NSTATES       3
-#define SIL_NSTATES        2
-#define SP_NSTATES         1
+#define SIL_NSTATES        1
 
-#define NOTE_NMIXES       2
-#define SIL_NMIXES        1
-#define SP_NMIXES         1
+#define NOTE_NMIXES       1
+#define SIL_NMIXES        1    // SIL for rests
+
+#define USE_HTK_FLAVOR     0   // 0 for HTS, 1 for HTK
+
+#define HTK_PATH_PREFIX    "" //"/Users/lyang/htk-original/HTKTools/"  // with trailing slash
 
 int NFEAT;
 int mpi_tasks, mpi_rank;
+int gene_count = 0;  // count progress
 
 std::string run_dir;
 std::string run_number;
 std::string config_file;
 std::map<std::string, emxArray_real_T *> ground_truths;
 std::vector<int> msdInfo;
+std::string log_file;
 
+void log( const std::string &text )
+{
+    std::ofstream flog(
+        log_file, std::ios_base::app );
+    flog << text;
+}
+const std::string currentDateTime() {
+    time_t     now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&now);
+    // Visit http://en.cppreference.com/w/cpp/chrono/c/strftime
+    // for more information about date/time format
+    strftime(buf, sizeof(buf), "%Y-%m-%d.%X", &tstruct);
+
+    return buf;
+}
 
 float Objective(GAGenome &);    // This is the declaration of our obj function.
                                 // The definition comes later in the file.
 float Objective_exception_free(GAGenome &);
 
-std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, const GA1DBinaryStringGenome &genome);
+std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, const GA1DBinaryStringGenome &genome, int useHTKFlavor);
 std::string make_dur_mmf (int nStates, const std::vector<std::string> &monophones);
 
 void read_proto(const std::string &, const std::string &);
 void write_macros(const std::string &);
 void write_hmmdefs(const std::string &, const std::vector<double> &, const std::vector<std::string> &);
+
+std::string genome2str(const GA1DBinaryStringGenome &);
 
 void _inner_my_system(const char *cmd) {
   cout << cmd << "\n";cout.flush();
@@ -99,6 +123,36 @@ void my_system(const std::string &cmd) {
 void my_system(const std::stringstream &cmd) {
   _inner_my_system(cmd.str().c_str());
 }
+
+
+class MyGASimpleGA: public GASimpleGA {
+  // extend original class to write results for genes
+  using GASimpleGA::GASimpleGA;
+
+ public:
+  std::string my_generation_file;
+
+  virtual void evolve(unsigned int seed=0){
+    initialize(seed);
+    while(!done()){
+      if (!my_generation_file.empty()) {
+        my_write_genes_in_generation();// write exact genes
+      }
+      step();
+    }
+    if(stats.flushFrequency() > 0) stats.flushScores();
+  }
+  void my_write_genes_in_generation() {
+    std::ofstream gen_file(
+        my_generation_file, std::ios_base::out | std::ios_base::app );
+    gen_file << stats.generation() << " ";
+    for (int i=0; i<pop->size(); i++) {
+      gen_file << " " << genome2str((const GA1DBinaryStringGenome &)pop->individual(i));
+    }
+    gen_file << "\n";
+  }
+};
+
 
 void load_mlf(const char *filename, std::map<std::string, emxArray_real_T *> *map) {
   std::ifstream f(filename);
@@ -175,23 +229,26 @@ main(int argc, char **argv)
   clock_t t;
   t = clock();    // start time
 
-  cout << "GA";
-  cout << "\n";
-  cout << "\n\n"; cout.flush();
-
 // See if we've been given a seed to use (for testing purposes).  When you
 // specify a random seed, the evolution will be exactly the same each time
 // you use that seed number.
 
-  if (argc < 2) {
-    cout << "Please provide run #.\n";
+  if (argc < 4) {
+    cout << "Please provide run #, seed, train scp\n";
     return -1;
   }
 
-  // seed
-  for(int ii=2; ii<argc; ii++) {
-    if(strcmp(argv[ii++],"seed") == 0) {
-      GARandomSeed((unsigned int)atoi(argv[ii]));
+  std::srand(unsigned(atoi(argv[2])));
+  GARandomSeed((unsigned int)atoi(argv[2]));
+
+  // read train set
+  FILE_TRAIN = argv[3];
+  {
+    std::ifstream f(FILE_TRAIN);
+    std::string line;
+    while ( std::getline(f, line) ) {
+      if ( !line.empty() )
+        train_set.push_back(line);
     }
   }
 
@@ -207,20 +264,28 @@ main(int argc, char **argv)
     msdInfo.push_back(tmp);
   }
   NFEAT = msdInfo.size();
-  cout << "nFeat: " << NFEAT << "\n";
 
 
   // config run dir
   run_number = argv[1];
-  cout << "Run #: " << run_number << "\n";
   run_dir = "GArun_";run_dir += run_number;
 
   config_file = run_dir+"/config";
-
+  log_file = run_dir+"/log";
 
   if (mpi_rank != 0) {   // other threads: wait a bit for main thread
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
   } else {  // main thread
+    log("\n\n");
+    log("===================================\n");
+    std::stringstream temp;
+    temp << "Start time: " << currentDateTime() << "\n"
+         << "Run #: " << run_number << "\n"
+         << "Random seed: " << argv[2] << "\n"
+         << "NFEAT: " << NFEAT << "\n"
+         << "Train set size: " << train_set.size() << "\n";
+    log(temp.str());
+
     std::string cmd_mkdir = "mkdir ";
     my_system(cmd_mkdir+" "+run_dir);
 
@@ -320,27 +385,29 @@ main(int argc, char **argv)
 // we want to use in the GA.  The ga doesn't operate on this genome in the
 // optimization - it just uses it to clone a population of genomes.
 
-  GA1DBinaryStringGenome genome(NFEAT, Objective);//_exception_free);
+  GA1DBinaryStringGenome genome(NFEAT, Objective_exception_free);
 
 // Now that we have the genome, we create the genetic algorithm and set
 // its parameters - number of generations, mutation probability, and crossover
 // probability.  And finally we tell it to evolve itself.
 
-  GASimpleGA ga(genome);
+  MyGASimpleGA ga(genome);
 
   // popsize / mpi_tasks must be an integer
   int popsize = mpi_tasks * int((double)POPSIZE/(double)mpi_tasks+0.999);
-  ga.populationSize(POPSIZE);
+  ga.populationSize(popsize);
 
   ga.nGenerations(NGEN);
   ga.pMutation(PMUT);
   ga.pCrossover(PCROSS);
   ga.elitist(gaTrue);
 
-  if (mpi_rank == 0)
+  if (mpi_rank == 0) {
+    ga.my_generation_file = run_dir+"/generationInfo.txt";
     ga.scoreFilename((run_dir+"/evolution.txt").c_str());
-  else
+  } else {
     ga.scoreFilename("/dev/null");
+  }
   ga.scoreFrequency(1);
   ga.flushFrequency(1);
   ga.selectScores(GAStatistics::AllScores);
@@ -350,10 +417,15 @@ main(int argc, char **argv)
 
   if (mpi_rank == 0) {
     // Now we print out the best genome that the GA found.
-    cout << "The GA found:\n" << ga.statistics().bestIndividual() << "\n";
+    std::stringstream temp;
+    temp << "Best candidate: " << ga.statistics().bestIndividual() << "\n"
+         << "End time: " << currentDateTime() << "\n";
+    log(temp.str());
 
-    t = clock() - t;
-    cout << "Time elapsed: " << (float)t/CLOCKS_PER_SEC << "\n\n";
+
+    std::ofstream fbest(
+        run_dir+"/best_genome", std::ios_base::out | std::ios_base::app );
+    fbest << ga.statistics().bestIndividual();
   }
 
   // That's it!
@@ -383,348 +455,470 @@ Objective(GAGenome &g) {
   uintmax_t id_thread = (uintmax_t)t;
   temp << mpi_rank << "_" << id_thread;
   std::string id = temp.str();
-  std::string working_dir = run_dir + "/" + id;
 
-  temp.str("");
-  temp << "mkdir " << working_dir;
-  my_system(temp);
+  gene_count += 1;
 
-  cout << run_number << " " << id << " " << genome << "\n";
+  //if (mpi_rank == 0) {
+    temp.str("");
+    temp << gene_count << "(on thread #" << mpi_rank << ") start: " << currentDateTime() << "\n";
+    log(temp.str());
+    //}
 
   //////// write genes
-  {
-    std::vector<double> weights;
-    std::stringstream gene_ss;
-    for (int i=0; i<NFEAT; i++) {
-      gene_ss << genome.gene(i);
-      weights.push_back(genome.gene(i));
-    }
+  std::stringstream gene_ss;
+  std::vector<double> weights;
+  for (int i=0; i<NFEAT; i++) {
+    gene_ss << genome.gene(i);
+    weights.push_back(genome.gene(i));
+  }
+  temp.str("");
+  temp << "echo " << "\"" << id << " " << gene_ss.str() << "\" >> " << run_dir << "/genes";
+  cout << temp.str() << "\n"; cout.flush();
+  my_system(temp);
+
+  // accumulators for evaluation measures
+  double acc_COnPOff_Precision = 0.0;
+  double acc_COnPOff_Recall = 0.0;
+  double acc_COnPOff_Fmeasure = 0.0;
+
+  double acc_COnOff_Precision = 0.0;
+  double acc_COnOff_Recall = 0.0;
+  double acc_COnOff_Fmeasure = 0.0;
+
+  double acc_COnP_Precision = 0.0;
+  double acc_COnP_Recall = 0.0;
+  double acc_COnP_Fmeasure = 0.0;
+
+  double acc_COn_Precision = 0.0;
+  double acc_COn_Recall = 0.0;
+  double acc_COn_Fmeasure = 0.0;
+
+  double acc_OBOn_rate = 0.0;
+  double acc_OBP_rate = 0.0;
+  double acc_OBOff_rate = 0.0;
+
+  double acc_S_rate = 0.0;
+  //double acc_S_ratio = 0.0;
+
+  double acc_M_rate = 0.0;
+  //double acc_M_ratio = 0.0;
+
+  double acc_PU_rate = 0.0;
+  double acc_ND_rate = 0.0;
+
+
+  // split folds randomly
+  std::random_shuffle(train_set.begin(), train_set.end());
+  int fold_size = train_set.size() / (int)NFOLD;
+  int n_folds_with_one_more = train_set.size() % (int)NFOLD;
+  int fold_pointer = 0;
+
+  for (int l=1; l<=NFOLD; l++) {
+    // mkdir
     temp.str("");
-    temp << "echo " << "\"" << id << " " << gene_ss.str() << "\" >> " << run_dir << "/genes";
-    cout << temp.str() << "\n"; cout.flush();
+    temp << run_dir << "/" << id << "_fold" << l;
+    std::string working_dir = temp.str();
+
+    temp.str("");
+    temp << "mkdir " << working_dir;
     my_system(temp);
-  }
 
+    // set up outer/inner training sets
+    // outer: fold_pointer..fold_pointer+this_fold_size
+    // inner: 0..fold_pointer + fold_pointer+this_fold_size..train_set.size()
+    int this_fold_size = (l<=n_folds_with_one_more) ? (fold_size+1) : fold_size;
+    std::string inner_scp = working_dir + "/inner.scp";
+    std::string outer_scp = working_dir + "/outer.scp";
+    std::ofstream finner_scp(inner_scp.c_str());
+    std::ofstream fouter_scp(outer_scp.c_str());
 
-  /////////////////////////////////////////
-  // 0. prepare starting HMMs
-  /////////////////////////////////////////
-  temp.str("");
-  temp << "mkdir " << working_dir << "/hmm0";
-  my_system(temp);
+    for (std::vector<std::string>::size_type i = 0; i != train_set.size(); i++) {
+      if (i < fold_pointer) {
+        finner_scp << train_set[i] << "\n";
+      } else if (i < fold_pointer+this_fold_size) {
+        fouter_scp << train_set[i] << "\n";
+      } else {
+        finner_scp << train_set[i] << "\n";
+      }
+    }
+    fold_pointer += this_fold_size;
 
-  // make proto  note
-  std::ofstream fproto_note((working_dir+"/hmm0/proto_note").c_str());
-  fproto_note << make_proto(NOTE_NSTATES, NOTE_NMIXES, msdInfo, genome);
-  fproto_note.close();
+    finner_scp.close();
+    fouter_scp.close();
 
-  // HCompV
-  temp.str("");
-  temp << "HCompV"
-       << " -C " << config_file
-       << " -f 0.01"
-       << " -m"
-       << " -S " << FILE_TRAIN
-       << " -M " << working_dir << "/hmm0"
-       << " -o proto_note.average"
-       << " " << working_dir << "/hmm0/proto_note";
-  my_system(temp);
+    /////////////////////////////////////////
+    // 0. prepare starting HMMs
+    /////////////////////////////////////////
+    temp.str("");
+    temp << "mkdir " << working_dir << "/hmm0";
+    my_system(temp);
 
-  // Build init mmf file
-  std::ifstream ffeat_proto((working_dir+"/hmm0/proto_note").c_str());
-  std::string line;
-  std::getline(ffeat_proto, line);
-  ffeat_proto.close();
-  std::ofstream ffeat_init((working_dir+"/hmm0/proto_note.macro").c_str());
-  ffeat_init << line << "\n";
-  std::ifstream vFloors((working_dir+"/hmm0/vFloors").c_str());
-  while (std::getline(vFloors, line)) {
-    ffeat_init << line << "\n";
-  }
-  ffeat_init.close();
+    // make proto  note
+    std::ofstream fproto_note((working_dir+"/hmm0/proto_note").c_str());
+    fproto_note << make_proto(NOTE_NSTATES, NOTE_NMIXES, msdInfo, genome, USE_HTK_FLAVOR);
+    fproto_note.close();
 
+    // HCompV
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HCompV"
+         << " -C " << config_file
+         << " -f 0.01"
+         << " -m"
+         << " -S " << inner_scp
+         << " -M " << working_dir << "/hmm0"
+         << " -o proto_note.average"
+         << " " << working_dir << "/hmm0/proto_note";
+    my_system(temp);
 
-  // make proto  sil
-  std::ofstream fproto_sil((working_dir+"/hmm0/proto_sil").c_str());
-  fproto_sil << make_proto(SIL_NSTATES, SIL_NMIXES, msdInfo, genome);
-  fproto_sil.close();
-
-  // HCompV
-  temp.str("");
-  temp << "HCompV"
-       << " -C " << config_file
-       << " -f 0.01"
-       << " -m"
-       << " -S " << FILE_TRAIN
-       << " -M " << working_dir << "/hmm0"
-       << " -o proto_sil.average"
-       << " " << working_dir << "/hmm0/proto_sil";
-  my_system(temp);
-
-  // Build init mmf file
-  {
-    std::ifstream ffeat_proto((working_dir+"/hmm0/proto_sil").c_str());
+    // Build init mmf file
+    std::ifstream ffeat_proto((working_dir+"/hmm0/proto_note").c_str());
     std::string line;
     std::getline(ffeat_proto, line);
     ffeat_proto.close();
-    std::ofstream ffeat_init((working_dir+"/hmm0/proto_sil.macro").c_str());
+    std::ofstream ffeat_init((working_dir+"/hmm0/proto_note.macro").c_str());
     ffeat_init << line << "\n";
     std::ifstream vFloors((working_dir+"/hmm0/vFloors").c_str());
     while (std::getline(vFloors, line)) {
       ffeat_init << line << "\n";
     }
     ffeat_init.close();
-  }
 
 
+    // make proto  sil
+    std::ofstream fproto_sil((working_dir+"/hmm0/proto_sil").c_str());
+    fproto_sil << make_proto(SIL_NSTATES, SIL_NMIXES, msdInfo, genome, USE_HTK_FLAVOR);
+    fproto_sil.close();
 
-  // make proto
-  std::ofstream fproto_sp((working_dir+"/hmm0/proto_sp").c_str());
-  fproto_sp << make_proto(SP_NSTATES, SP_NMIXES, msdInfo, genome);
-  fproto_sp.close();
+    // HCompV
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HCompV"
+         << " -C " << config_file
+         << " -f 0.01"
+         << " -m"
+         << " -S " << inner_scp
+         << " -M " << working_dir << "/hmm0"
+         << " -o proto_sil.average"
+         << " " << working_dir << "/hmm0/proto_sil";
+    my_system(temp);
 
-  // HCompV
-  temp.str("");
-  temp << "HCompV"
-       << " -C " << config_file
-       << " -f 0.01"
-       << " -m"
-       << " -S " << FILE_TRAIN
-       << " -M " << working_dir << "/hmm0"
-       << " -o proto_sp.average"
-       << " " << working_dir << "/hmm0/proto_sp";
-  my_system(temp);
-
-  // Build init mmf file
-  {
-    std::ifstream ffeat_proto((working_dir+"/hmm0/proto_sp").c_str());
-    std::string line;
-    std::getline(ffeat_proto, line);
-    ffeat_proto.close();
-    std::ofstream ffeat_init((working_dir+"/hmm0/proto_sp.macro").c_str());
-    ffeat_init << line << "\n";
-    std::ifstream vFloors((working_dir+"/hmm0/vFloors").c_str());
-    while (std::getline(vFloors, line)) {
+    // Build init mmf file
+    {
+      std::ifstream ffeat_proto((working_dir+"/hmm0/proto_sil").c_str());
+      std::string line;
+      std::getline(ffeat_proto, line);
+      ffeat_proto.close();
+      std::ofstream ffeat_init((working_dir+"/hmm0/proto_sil.macro").c_str());
       ffeat_init << line << "\n";
+      std::ifstream vFloors((working_dir+"/hmm0/vFloors").c_str());
+      while (std::getline(vFloors, line)) {
+        ffeat_init << line << "\n";
+      }
+      ffeat_init.close();
     }
-    ffeat_init.close();
-  }
 
 
-  // HInit for all
-  temp.str("");
-  temp << "HInit"
-       << " -C " << config_file
-       << " -H " << working_dir << "/hmm0/proto_note.macro"
-       << " -M " << working_dir << "/hmm0"
-       << " -I " << FILE_GROUNDTRUTH
-       << " -l NOTE"
-       << " -o NOTE"
-       << " -S " << FILE_TRAIN
-       << " -w 5000"
-       << " " << working_dir << "/hmm0/proto_note";
-  my_system(temp);
 
-  temp.str("");
-  temp << "HInit"
-       << " -C " << config_file
-       << " -H " << working_dir << "/hmm0/proto_sil.macro"
-       << " -M " << working_dir << "/hmm0"
-       << " -I " << FILE_GROUNDTRUTH
-       << " -l SIL"
-       << " -o SIL"
-       << " -S " << FILE_TRAIN
-       << " -w 5000"
-       << " " << working_dir << "/hmm0/proto_sil";
-  my_system(temp);
+    // HInit for all
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HInit"
+         << " -C " << config_file
+         << " -H " << working_dir << "/hmm0/proto_note.macro"
+         << " -M " << working_dir << "/hmm0"
+         << " -I " << FILE_GROUNDTRUTH
+         << " -l NOTE"
+         << " -o NOTE"
+         << " -S " << inner_scp
+         << " -w 5000"
+         << " " << working_dir << "/hmm0/proto_note";
+    my_system(temp);
 
-  temp.str("");
-  temp << "HInit"
-       << " -C " << config_file
-       << " -H " << working_dir << "/hmm0/proto_sp.macro"
-       << " -M " << working_dir << "/hmm0"
-       << " -I " << FILE_GROUNDTRUTH
-       << " -l SP"
-       << " -o SP"
-       << " -S " << FILE_TRAIN
-       << " -w 5000"
-       << " " << working_dir << "/hmm0/proto_sp";
-  my_system(temp);
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HInit"
+         << " -C " << config_file
+         << " -H " << working_dir << "/hmm0/proto_sil.macro"
+         << " -M " << working_dir << "/hmm0"
+         << " -I " << FILE_GROUNDTRUTH
+         << " -l SIL"
+         << " -o SIL"
+         << " -S " << inner_scp
+         << " -w 5000"
+         << " " << working_dir << "/hmm0/proto_sil";
+    my_system(temp);
 
-  // HHEd   make a monophone mmf (feat)
-  // [TODO]   tie stream weights
-  std::ofstream ffeat_lvf((working_dir+"/hmm0/feat.lvf.hed").c_str());
-  ffeat_lvf << "FV " << working_dir << "/hmm0/vFloors" << "\n";
-  ffeat_lvf.close();
-  temp.str("");
-  temp << "HHEd"
-       << " -C " << config_file
-       << " -p"
-       << " -i"
-       << " -d " << working_dir << "/hmm0"
-       << " -w " << working_dir << "/hmm0/feat.monophones"
-       << " " << working_dir << "/hmm0/feat.lvf.hed"
-       << " " << FILE_MONOPHONES;
-  my_system(temp);
-  /*
-  // Making duration monophone mmf
-  std::ofstream fdur_mmf((working_dir+"/hmm0/dur.monophones").c_str());
-  std::vector<std::string> monophones = {"ONSET", "NOT_ONSET"};
-  fdur_mmf << make_dur_mmf(3, monophones);
-  fdur_mmf.close();
-  */
-
-  std::string cmd_mkdir = "mkdir ";
-
-  // HERest (0->1) ////////////////////////
-  my_system(cmd_mkdir + working_dir + "/hmm1");
-  temp.str("");
-  temp << "HERest"
-    //<< " -T 1"
-       << " -C " << config_file
-       << " -I " << FILE_GROUNDTRUTH
-       << " -t 250.0 200.0 10500.0"
-       << " -S " << FILE_TRAIN
-       << " -H " << working_dir << "/hmm0/feat.monophones"
-    //<< " -N " << working_dir << "/hmm0/dur.monophones"
-       << " -M " << working_dir << "/hmm1"
-    //<< "  monophones"
-       << " " << FILE_MONOPHONES;
-  my_system(temp);
-
-  // HERest (1->2) ////////////////////////
-  my_system(cmd_mkdir + working_dir + "/hmm2");
-  temp.str("");
-  temp << "HERest"
-       << " -C " << config_file
-       << " -I " << FILE_GROUNDTRUTH
-       << " -t 250.0 200.0 10500.0"
-       << " -S " << FILE_TRAIN
-       << " -H " << working_dir << "/hmm1/feat.monophones"
-    //<< " -N " << working_dir << "/hmm0/dur.monophones"
-       << " -M " << working_dir << "/hmm2"
-    //<< "  monophones"
-       << " " << FILE_MONOPHONES;
-  my_system(temp);
-
-  // HERest (2->3) ////////////////////////
-  my_system(cmd_mkdir + working_dir + "/hmm3");
-  temp.str("");
-  temp << "HERest"
-       << " -C " << config_file
-       << " -I " << FILE_GROUNDTRUTH
-       << " -t 250.0 200.0 10500.0"
-       << " -S " << FILE_TRAIN
-       << " -H " << working_dir << "/hmm2/feat.monophones"
-    //<< " -N " << working_dir << "/hmm0/dur.monophones"
-       << " -M " << working_dir << "/hmm3"
-    //<< "  monophones"
-       << " " << FILE_MONOPHONES;
-  my_system(temp);
-
-
-  // HVite generate test set ////////////////////
-  temp.str("");
-  temp << "HVite"
-       << " -C " << config_file
-       << " -H " << working_dir << "/hmm3/feat.monophones"
-       << " -S " << FILE_TEST
-       << " -l '*' "
-       << " -i " << working_dir << "/test.mlf"
-       << " -w " << FILE_WDNET
-       << " -p 0.0"
-       << " -s 5.0"
-       << " " << FILE_DICT
-       << " " << FILE_MONOPHONES;
-  my_system(temp);
-
-
-  // Evaluation Framework ////////////////
-  temp.str("");
-  temp << working_dir << "/result";
-  std::string fnresults = temp.str();
-
-  std::map<std::string, emxArray_real_T *> results;
-  load_mlf((working_dir+"/test.mlf").c_str(), &results);
-
-  int sum_N_GT = 0;
-  int sum_N_TR = 0;
-  int sum_COn_size = 0;
-  int count = 0;
-
-  for(std::map<std::string, emxArray_real_T *>::iterator iterator = results.begin(); iterator != results.end(); iterator++) {  // loop all test excerpts
-    std::string key = iterator->first;
-    emxArray_real_T *result_matrix = iterator->second;
-    emxArray_real_T *gt_matrix = ground_truths[key];
-
-    struct0_T Results;
-    emxInit_struct0_T(&Results);
-    classifyNotes(gt_matrix, result_matrix, ONSET_LIM, DUR_PERCENT_RANGE, MIN_DUR_DIST, F0_RANGE_IN_CENTS, HOPSIZE, &Results);
-
-    count += 1;
-    sum_N_GT += (int) Results.N_GT;
-    sum_N_TR += (int) Results.N_TR;
-    sum_COn_size += (int) Results.COn_listgt->size[1];
-
+    // HHEd   make a monophone mmf (feat)
+    // [TODO]   tie stream weights
+    std::ofstream ffeat_lvf((working_dir+"/hmm0/feat.lvf.hed").c_str());
+    ffeat_lvf << "FV " << working_dir << "/hmm0/vFloors" << "\n";
+    ffeat_lvf.close();
+    temp.str("");
+    temp /*<< HTK_PATH_PREFIX*/ << "HHEd"
+         << " -C " << config_file
+         << " -p"
+         << " -i"
+         << " -d " << working_dir << "/hmm0"
+         << " -w " << working_dir << "/hmm0/feat.monophones"
+         << " " << working_dir << "/hmm0/feat.lvf.hed"
+         << " " << FILE_MONOPHONES;
+    my_system(temp);
     /*
-    cout << "N GT: " << Results.N_GT << "\n"
-         << "N TR: " << Results.N_TR << "\n"
-         << "Correct Onset & Offset: \n"
-         << "  Count: " << " " << Results.COnPOff_listgt->size[1] << "\n"
-         << "  Precision: " << Results.COnPOff_Precision << "\n"
-         << "  Recall: " << Results.COnPOff_Recall << "\n"
-         << "  Fmeasure: " << Results.COnPOff_Fmeasure << "\n"
-         << "Correct Onset: \n"
-         << "  Count: " << " " << Results.COnP_listgt->size[1] << "\n"
-         << "  Precision: " << Results.COnP_Precision << "\n"
-         << "  Recall: " << Results.COnP_Recall << "\n"
-         << "  Fmeasure: " << Results.COnP_Fmeasure << "\n"
-         << "Correct Onset (2): \n"
-         << "  Count: " << " " << Results.COn_listgt->size[1] << "\n"
-         << "  Precision: " << Results.COn_Precision << "\n"
-         << "  Recall: " << Results.COn_Recall << "\n"
-         << "  Fmeasure: " << Results.COn_Fmeasure << "\n"
-         << "Wrong Pitch: \n"
-         << "  Rate: " << Results.OBP_rategt << "\n";
+    // Making duration monophone mmf
+    std::ofstream fdur_mmf((working_dir+"/hmm0/dur.monophones").c_str());
+    std::vector<std::string> monophones = {"ONSET", "NOT_ONSET"};
+    fdur_mmf << make_dur_mmf(3, monophones);
+    fdur_mmf.close();
     */
 
-    emxDestroy_struct0_T(Results);
+    std::string cmd_mkdir = "mkdir ";
+
+    // HERest (0->1) ////////////////////////
+    my_system(cmd_mkdir + working_dir + "/hmm1");
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HERest"
+      //<< " -T 1"
+         << " -C " << config_file
+         << " -I " << FILE_GROUNDTRUTH
+         << " -t 250.0 200.0 10500.0"
+         << " -S " << inner_scp
+         << " -H " << working_dir << "/hmm0/feat.monophones"
+      //<< " -N " << working_dir << "/hmm0/dur.monophones"
+         << " -M " << working_dir << "/hmm1"
+      //<< "  monophones"
+         << " " << FILE_MONOPHONES;
+    my_system(temp);
+
+    // HERest (1->2) ////////////////////////
+    my_system(cmd_mkdir + working_dir + "/hmm2");
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HERest"
+         << " -C " << config_file
+         << " -I " << FILE_GROUNDTRUTH
+         << " -t 250.0 200.0 10500.0"
+         << " -S " << inner_scp
+         << " -H " << working_dir << "/hmm1/feat.monophones"
+      //<< " -N " << working_dir << "/hmm0/dur.monophones"
+         << " -M " << working_dir << "/hmm2"
+      //<< "  monophones"
+         << " " << FILE_MONOPHONES;
+    my_system(temp);
+
+    // HERest (2->3) ////////////////////////
+    my_system(cmd_mkdir + working_dir + "/hmm3");
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HERest"
+         << " -C " << config_file
+         << " -I " << FILE_GROUNDTRUTH
+         << " -t 250.0 200.0 10500.0"
+         << " -S " << inner_scp
+         << " -H " << working_dir << "/hmm2/feat.monophones"
+      //<< " -N " << working_dir << "/hmm0/dur.monophones"
+         << " -M " << working_dir << "/hmm3"
+      //<< "  monophones"
+         << " " << FILE_MONOPHONES;
+    my_system(temp);
+
+
+    // HVite generate test set ////////////////////
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HVite"
+         << " -C " << config_file
+         << " -H " << working_dir << "/hmm3/feat.monophones"
+         << " -S " << outer_scp
+         << " -l '*' "
+         << " -i " << working_dir << "/test.mlf"
+         << " -w " << FILE_WDNET
+         << " -p 0.0"
+         << " -s 5.0"
+         << " " << FILE_DICT
+         << " " << FILE_MONOPHONES;
+    my_system(temp);
+
+
+    // Evaluation Framework ////////////////
+    temp.str("");
+    temp << working_dir << "/result";
+    std::string fnresults = temp.str();
+
+    std::map<std::string, emxArray_real_T *> results;
+    load_mlf((working_dir+"/test.mlf").c_str(), &results);
+
+    int sum_N_GT = 0;
+    int sum_N_TR = 0;
+
+    int sum_COnPOff_size = 0;
+    int sum_COnOff_size = 0;
+    int sum_COnP_size = 0;
+    int sum_COn_size = 0;
+
+    int sum_OBOn_size = 0;
+    int sum_OBP_size = 0;
+    int sum_OBOff_size = 0;
+
+    int sum_S_listgt_size = 0;
+    //int sum_S_listtr_size = 0;
+    int sum_M_listgt_size = 0;
+    //int sum_M_listtr_size = 0;
+    int sum_PU_size = 0;
+    int sum_ND_size = 0;
+
+    int count = 0;
+
+    for(std::map<std::string, emxArray_real_T *>::iterator iterator = results.begin(); iterator != results.end(); iterator++) {  // loop all test excerpts
+      std::string key = iterator->first;
+      emxArray_real_T *result_matrix = iterator->second;
+      emxArray_real_T *gt_matrix = ground_truths[key];
+
+      struct0_T Results;
+      emxInit_struct0_T(&Results);
+      classifyNotes(gt_matrix, result_matrix, ONSET_LIM, DUR_PERCENT_RANGE, MIN_DUR_DIST, F0_RANGE_IN_CENTS, HOPSIZE, &Results);
+
+      count += 1;
+      sum_N_GT += (int) Results.N_GT;
+      sum_N_TR += (int) Results.N_TR;
+
+      sum_COnPOff_size += (int) Results.COnPOff_listgt->size[1];
+      sum_COnOff_size += (int) Results.COnOff_listgt->size[1];
+      sum_COnP_size += (int) Results.COnP_listgt->size[1];
+      sum_COn_size += (int) Results.COn_listgt->size[1];
+
+      sum_OBOn_size += (int) Results.OBOn_listgt->size[1];
+      sum_OBP_size += (int) Results.OBP_listgt->size[1];
+      sum_OBOff_size += (int) Results.OBOff_listgt->size[1];
+
+      sum_S_listgt_size += (int) Results.S_listgt->size[1];
+      //sum_S_listtr_size += (int) Results.S_listtr->size[1];
+      sum_M_listgt_size += (int) Results.M_listgt->size[1];
+      //sum_M_listtr_size += (int) Results.M_listtr->size[1];
+      sum_PU_size += (int) Results.PU_listtr->size[1];
+      sum_ND_size += (int) Results.ND_listgt->size[1];
+
+      //cout << (int) Results.COnPOff_listgt->size[1] << (int) Results.OBP_listgt->size[1] << (int) Results.COnOff_listgt->size[1] << "\n";
+
+      emxDestroy_struct0_T(Results);
+    }
+
+    //// deallocate MATLAB matrices
+    for(std::map<std::string, emxArray_real_T *>::iterator iterator = results.begin(); iterator != results.end(); iterator++) {
+      emxArray_real_T *matrix = iterator->second;
+      emxDestroyArray_real_T(matrix);
+    }
+
+    /// evaluation measures for this fold
+    acc_COnPOff_Precision = (double)sum_COnPOff_size / (double)sum_N_GT;
+    acc_COnPOff_Recall = (double)sum_COnPOff_size / (double)sum_N_TR;
+    acc_COnPOff_Fmeasure = 2.0 * (double)sum_COnPOff_size / (double)(sum_N_GT + sum_N_TR);
+
+    acc_COnOff_Precision = (double)sum_COnOff_size / (double)sum_N_GT;
+    acc_COnOff_Recall = (double)sum_COnOff_size / (double)sum_N_TR;
+    acc_COnOff_Fmeasure = 2.0 * (double)sum_COnOff_size / (double)(sum_N_GT + sum_N_TR);
+
+    acc_COnP_Precision = (double)sum_COnP_size / (double)sum_N_GT;
+    acc_COnP_Recall = (double)sum_COnP_size / (double)sum_N_TR;
+    acc_COnP_Fmeasure = 2.0 * (double)sum_COnP_size / (double)(sum_N_GT + sum_N_TR);
+
+    acc_COn_Precision = (double)sum_COn_size / (double)sum_N_GT;
+    acc_COn_Recall = (double)sum_COn_size / (double)sum_N_TR;
+    acc_COn_Fmeasure = 2.0 * (double)sum_COn_size / (double)(sum_N_GT + sum_N_TR);
+
+    acc_OBOn_rate = (double)sum_OBOn_size / (double)sum_N_GT;
+    acc_OBP_rate = (double)sum_OBP_size / (double)sum_N_GT;
+    acc_OBOff_rate = (double)sum_OBOff_size / (double)sum_N_GT;
+
+    acc_S_rate = (double)sum_S_listgt_size / (double)sum_N_GT;
+    //acc_S_ratio = (double)sum_S_listtr_size / (double)sum_S_listgt_size;
+
+    acc_M_rate = (double)sum_M_listgt_size / (double)sum_N_GT;
+    //acc_M_ratio = (double)sum_M_listtr_size / (double)sum_M_listgt_size;
+
+    acc_PU_rate = (double)sum_PU_size / (double)sum_N_TR;
+    acc_ND_rate = (double)sum_ND_size / (double)sum_N_GT;
   }
+  // average scores.
+  double avg_COnPOff_Precision = acc_COnPOff_Precision / NFOLD;
+  double avg_COnPOff_Recall = acc_COnPOff_Recall / NFOLD;
+  double avg_COnPOff_Fmeasure = acc_COnPOff_Fmeasure / NFOLD;
 
+  double avg_COnOff_Precision = acc_COnOff_Precision / NFOLD;
+  double avg_COnOff_Recall = acc_COnOff_Recall / NFOLD;
+  double avg_COnOff_Fmeasure = acc_COnOff_Fmeasure / NFOLD;
 
-  //// deallocate MATLAB matrices
-  for(std::map<std::string, emxArray_real_T *>::iterator iterator = results.begin(); iterator != results.end(); iterator++) {
-    emxArray_real_T *matrix = iterator->second;
-    emxDestroyArray_real_T(matrix);
-  }
+  double avg_COnP_Precision = acc_COnP_Precision / NFOLD;
+  double avg_COnP_Recall = acc_COnP_Recall / NFOLD;
+  double avg_COnP_Fmeasure = acc_COnP_Fmeasure / NFOLD;
 
-  double f_measure = 2.0 * sum_COn_size / (sum_N_GT + sum_N_TR);
-  cout << "Score: " << f_measure << "\n";
+  double avg_COn_Precision = acc_COn_Precision / NFOLD;
+  double avg_COn_Recall = acc_COn_Recall / NFOLD;
+  double avg_COn_Fmeasure = acc_COn_Fmeasure / NFOLD;
 
+  double avg_OBOn_rate = acc_OBOn_rate / NFOLD;
+  double avg_OBP_rate = acc_OBP_rate / NFOLD;
+  double avg_OBOff_rate = acc_OBOff_rate / NFOLD;
+
+  double avg_S_rate = acc_S_rate / NFOLD;
+  //double avg_S_ratio = acc_S_ratio / NFOLD;
+
+  double avg_M_rate = acc_M_rate / NFOLD;
+  //double avg_M_ratio = acc_M_ratio / NFOLD;
+
+  double avg_PU_rate = acc_PU_rate / NFOLD;
+  double avg_ND_rate = acc_ND_rate / NFOLD;
 
   //////// write results
   temp.str("");
-  temp << "echo " << "\"" << id << " " << f_measure << "\" >> " << run_dir << "/results";
-  cout << temp.str() << "\n"; cout.flush();
+  temp << "echo " << "\"" << gene_ss.str()
+       << " " << "COnPOff_P=" << avg_COnPOff_Precision
+       << " " << "COnPOff_R=" << avg_COnPOff_Recall
+       << " " << "COnPOff_F=" << avg_COnPOff_Fmeasure
+
+       << " " << "COnOff_P=" << avg_COnOff_Precision
+       << " " << "COnOff_R=" << avg_COnOff_Recall
+       << " " << "COnOff_F=" << avg_COnOff_Fmeasure
+
+       << " " << "COnP_P=" << avg_COnP_Precision
+       << " " << "COnP_R=" << avg_COnP_Recall
+       << " " << "COnP_F=" << avg_COnP_Fmeasure
+
+       << " " << "COn_P=" << avg_COn_Precision
+       << " " << "COn_R=" << avg_COn_Recall
+       << " " << "COn_F=" << avg_COn_Fmeasure
+
+       << " " << "OBOn=" << avg_OBOn_rate
+       << " " << "OBP=" << avg_OBP_rate
+       << " " << "OBOff=" << avg_OBOff_rate
+
+       << " " << "S=" << avg_S_rate
+       << " " << "M=" << avg_M_rate
+       << " " << "PU=" << avg_PU_rate
+       << " " << "ND=" << avg_ND_rate
+
+       << "\" >> " << run_dir << "/results";
+  //cout << temp.str() << "\n"; cout.flush();
   my_system(temp.str().c_str());
 
-  return f_measure;
+  //if (mpi_rank == 0) {
+    temp.str("");
+    temp << gene_count << "(on thread #" << mpi_rank << ") end: " << currentDateTime() << "\n";
+    log(temp.str());
+    //}
+
+  return avg_COnOff_Precision;
 }
 
 
 
 
-std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, const GA1DBinaryStringGenome &genome) {
+std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, const GA1DBinaryStringGenome &genome, int useHTKFlavor) {
   std::stringstream proto;
   proto << "~o <VecSize> " << NFEAT << " <USER><DIAGC> "
         << "   <StreamInfo> " << NFEAT;
   for (int i=0; i<NFEAT; i++) {
     proto << " " << "1";
   }
-  proto << " "
-        << "   <MSDInfo> " << NFEAT;
-  for (int i=0; i<NFEAT; i++) {
-    proto << " " << msdInfo[i];
+  if (!useHTKFlavor) {
+    proto << " "
+          << "   <MSDInfo> " << NFEAT;
+    for (int i=0; i<NFEAT; i++) {
+      proto << " " << msdInfo[i];
+    }
   }
   proto << "\n"
         << " <BeginHMM>\n"
@@ -732,9 +926,23 @@ std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, 
 
   // States
   for (int k=2;k<=nStates+1;k++) {
+    proto << "   <State> " << k << "\n";
+
+    if (useHTKFlavor) {
+      // if HTK flavor, write msdinfo here as Mix numbers
+      proto << "     <NumMixes> ";
+      for (int i=0; i<NFEAT; i++) {
+        if (msdInfo[i]) { // is MSD: one more mix
+          proto << nMixes+1 << " ";
+        } else {
+          proto << nMixes << " ";
+        }
+      }
+      proto << "\n";
+    }
+
     // SWeights
-    proto << "   <State> " << k << "\n"
-          << "     <SWeights> " << NFEAT;
+    proto << "     <SWeights> " << NFEAT;
     for (int i=0; i<NFEAT; i++) {
       proto << " " << genome.gene(i);
     }
@@ -744,8 +952,10 @@ std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, 
     for (int i=0; i<NFEAT; i++) {
       if (msdInfo[i] == 0) {
         float mixprob = 1.0/nMixes;
-        proto << "      <Stream> " << i+1 << "\n"
-              << "        <NumMixes> " << nMixes << "\n";
+        proto << "      <Stream> " << i+1 << "\n";
+        if (!useHTKFlavor) {
+          proto << "        <NumMixes> " << nMixes << "\n";
+        }
         for (int j=1; j<=nMixes; j++) {
           proto << "          <Mixture> " << j << " " << mixprob << "\n"
                 << "            <Mean> 1 0.0\n"
@@ -753,16 +963,24 @@ std::string make_proto(int nStates, int nMixes, const std::vector<int> msdInfo, 
         }
       } else {
         float mixprob = 1.0/(nMixes+1);
-        proto << "      <Stream> " << i+1 << "\n"
-              << "        <NumMixes> " << nMixes+1 << "\n";
+        proto << "      <Stream> " << i+1 << "\n";
+        if (!useHTKFlavor) {
+          proto << "        <NumMixes> " << nMixes+1 << "\n";
+        }
         for (int j=1; j<=nMixes; j++) {
           proto << "          <Mixture> " << j << " " << mixprob << "\n"
                 << "            <Mean> 1 0.0\n"
                 << "            <Variance> 1 1.0\n";
         }
-        proto << "          <Mixture> " << nMixes+1 << " " << mixprob << "\n"
-              << "            <Mean> 0\n"
-              << "            <Variance> 0\n";
+        if (!useHTKFlavor) {
+          proto << "          <Mixture> " << nMixes+1 << " " << mixprob << "\n"
+                << "            <Mean> 0\n"
+                << "            <Variance> 0\n";
+        } else {
+          proto << "          <Mixture> " << nMixes+1 << " " << mixprob << "\n"
+                << "            <Mean> 1 1.0\n"
+                << "            <Variance> 1 1.0\n";
+        }
       }
     }
   }
@@ -858,3 +1076,12 @@ std::string make_dur_mmf (int nStates, const std::vector<std::string> &monophone
   return s.str();
 }
 */
+
+std::string
+genome2str(const GA1DBinaryStringGenome &genome) {
+  std::stringstream gene_ss;
+  for (int i=0; i<genome.length(); i++) {
+    gene_ss << genome.gene(i);
+  }
+  return gene_ss.str();
+}

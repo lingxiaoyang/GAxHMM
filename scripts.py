@@ -2,7 +2,6 @@ import glob
 import os
 from pylab import *
 
-
 FEATURES = {
     0: ("Pitch", ),
     1: ("Energy", ),
@@ -12,7 +11,7 @@ FEATURES = {
 
 
 
-rcParams['figure.figsize'] = 8, 12
+rcParams['figure.figsize'] = 15, 8
 
 
 def groundtruths2mlf(groundtruthsdir, mlf):
@@ -35,10 +34,11 @@ def groundtruths2mlf(groundtruthsdir, mlf):
                     if len(things) == 3:
                         start = float(things[0])
                         end = float(things[1])
-                        if start - prev < 0.20 and prev >= 0:  # <200ms SP
-                            lines.append('{0} {1} SP'.format(toHTKTime(prev), toHTKTime(start)))
-                            lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
-                        else:    # >200ms SIL
+                        if start - prev < 0.20 and prev >= 0:  # <200ms no break
+                            ##lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
+                            ##lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
+                            lines.append('{0} {1} NOTE'.format(toHTKTime(prev), toHTKTime(end)))
+                        else:    # >200ms break
                             if prev < 0:
                                 prev = 0
                             lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
@@ -241,3 +241,35 @@ def pitch_to_1_ground_truths(src, target):
             for line in f:
                 start, end = line.split()[:2]
                 g.write(start+' '+end+' 1\n')
+
+
+
+def analyze_GArun(GArun_dir):
+    # read genes and results
+    genes_map = {}
+    results_map = {}
+    results_list = []
+
+    len_gene = None
+
+    with open(GArun_dir+os.sep+"genes") as f:
+        for line in f:
+            i, g = line.split()
+            genes_map[i] = map(int, list(g))
+            len_gene = len(g)
+
+    with open(GArun_dir+os.sep+"results") as f:
+        for line in f:
+            i, r = line.split()
+            results_map[i] = float(r)
+            results_list.append((i, float(r)))
+
+    sorted_results_list = sorted(results_list, key=lambda a: a[1], reverse=True)
+
+    sums = [0] * len_gene
+    for i, r in sorted_results_list[:30]:
+        gene = genes_map[i]
+        sums = map(sum, zip(sums, gene))
+    print sums
+    bar(range(len_gene), sums)
+    show()

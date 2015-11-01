@@ -30,8 +30,8 @@
 
 #define cout STD_COUT
 
-#define POPSIZE  4
-#define NGEN     2
+#define POPSIZE  96
+#define NGEN     150
 #define PMUT     0.001
 #define PCROSS   0.9
 
@@ -42,7 +42,8 @@
 #define HOPSIZE            0.01   // secs
 
 
-#define NFOLD        3         // n-fold cross-validation for splitting the given training set.
+//#define NFOLD        3         // n-fold cross-validation for splitting the given training set.
+#define OUTER_TRAINING_SET_PERCENT    0.25   // 25% as outer training set
 
 #define FILE_MSDINFO         "train/msdInfo"
 #define FILE_GROUNDTRUTH     "groundtruth.mlf"
@@ -53,6 +54,8 @@
 
 std::string FILE_TRAIN = "";
 std::vector<std::string> train_set;
+std::string inner_scp;
+std::string outer_scp;
 
 #define NOTE_NSTATES       3
 #define SIL_NSTATES        1
@@ -61,6 +64,7 @@ std::vector<std::string> train_set;
 #define SIL_NMIXES        1    // SIL for rests
 
 #define USE_HTK_FLAVOR     0   // 0 for HTS, 1 for HTK
+//#define LOCAL_SHUFFLE      0
 
 #define HTK_PATH_PREFIX    "" //"/Users/lyang/htk-original/HTKTools/"  // with trailing slash
 
@@ -241,6 +245,16 @@ main(int argc, char **argv)
   std::srand(unsigned(atoi(argv[2])));
   GARandomSeed((unsigned int)atoi(argv[2]));
 
+  // config run dir
+  run_number = argv[1];
+  run_dir = "GArun_";run_dir += run_number;
+
+  config_file = run_dir+"/config";
+  log_file = run_dir+"/log";
+  inner_scp = run_dir+"/inner_train.scp";
+  outer_scp = run_dir+"/outer_train.scp";
+
+
   // read train set
   FILE_TRAIN = argv[3];
   {
@@ -256,7 +270,6 @@ main(int argc, char **argv)
   classifyNotes_initialize();
   load_mlf(FILE_GROUNDTRUTH, &ground_truths);
 
-
   // read feature numbers
   std::ifstream fmsdInfo(FILE_MSDINFO);
   int tmp;
@@ -266,16 +279,32 @@ main(int argc, char **argv)
   NFEAT = msdInfo.size();
 
 
-  // config run dir
-  run_number = argv[1];
-  run_dir = "GArun_";run_dir += run_number;
-
-  config_file = run_dir+"/config";
-  log_file = run_dir+"/log";
 
   if (mpi_rank != 0) {   // other threads: wait a bit for main thread
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
   } else {  // main thread
+    std::string cmd_mkdir = "mkdir ";
+    my_system(cmd_mkdir+" "+run_dir);
+
+    std::string cmd = "touch ";
+    cmd += run_dir;
+    my_system((cmd+"/genes").c_str());
+    my_system((cmd+"/results").c_str());
+
+    // Split into inner and outer sets.
+    std::random_shuffle(train_set.begin(), train_set.end());  // global shuffle
+    std::ofstream finner_scp(inner_scp.c_str());
+    std::ofstream fouter_scp(outer_scp.c_str());
+    for (std::vector<std::string>::size_type i = 0; i != train_set.size(); i++) {
+      if (i < train_set.size()*OUTER_TRAINING_SET_PERCENT) {
+        fouter_scp << train_set[i] << "\n";
+      } else {
+        finner_scp << train_set[i] << "\n";
+      }
+    }
+    finner_scp.close();
+    fouter_scp.close();
+
     log("\n\n");
     log("===================================\n");
     std::stringstream temp;
@@ -285,14 +314,6 @@ main(int argc, char **argv)
          << "NFEAT: " << NFEAT << "\n"
          << "Train set size: " << train_set.size() << "\n";
     log(temp.str());
-
-    std::string cmd_mkdir = "mkdir ";
-    my_system(cmd_mkdir+" "+run_dir);
-
-    std::string cmd = "touch ";
-    cmd += run_dir;
-    my_system((cmd+"/genes").c_str());
-    my_system((cmd+"/results").c_str());
 
 
     // write HTK config file
@@ -506,23 +527,27 @@ Objective(GAGenome &g) {
   double acc_PU_rate = 0.0;
   double acc_ND_rate = 0.0;
 
-
+  /*
   // split folds randomly
-  std::random_shuffle(train_set.begin(), train_set.end());
+  if (LOCAL_SHUFFLE) {
+    std::random_shuffle(train_set.begin(), train_set.end());
+  }
   int fold_size = train_set.size() / (int)NFOLD;
   int n_folds_with_one_more = train_set.size() % (int)NFOLD;
   int fold_pointer = 0;
+  */
+  int NFOLD = 1;  // remove it
 
   for (int l=1; l<=NFOLD; l++) {
     // mkdir
     temp.str("");
-    temp << run_dir << "/" << id << "_fold" << l;
+    temp << run_dir << "/" << id ;//<< "_fold" << l;
     std::string working_dir = temp.str();
 
     temp.str("");
     temp << "mkdir " << working_dir;
     my_system(temp);
-
+    /*
     // set up outer/inner training sets
     // outer: fold_pointer..fold_pointer+this_fold_size
     // inner: 0..fold_pointer + fold_pointer+this_fold_size..train_set.size()
@@ -544,7 +569,7 @@ Objective(GAGenome &g) {
     fold_pointer += this_fold_size;
 
     finner_scp.close();
-    fouter_scp.close();
+    fouter_scp.close();*/
 
     /////////////////////////////////////////
     // 0. prepare starting HMMs
@@ -803,34 +828,34 @@ Objective(GAGenome &g) {
     }
 
     /// evaluation measures for this fold
-    acc_COnPOff_Precision = (double)sum_COnPOff_size / (double)sum_N_GT;
-    acc_COnPOff_Recall = (double)sum_COnPOff_size / (double)sum_N_TR;
-    acc_COnPOff_Fmeasure = 2.0 * (double)sum_COnPOff_size / (double)(sum_N_GT + sum_N_TR);
+    acc_COnPOff_Precision += (double)sum_COnPOff_size / (double)sum_N_GT;
+    acc_COnPOff_Recall += (double)sum_COnPOff_size / (double)sum_N_TR;
+    acc_COnPOff_Fmeasure += 2.0 * (double)sum_COnPOff_size / (double)(sum_N_GT + sum_N_TR);
 
-    acc_COnOff_Precision = (double)sum_COnOff_size / (double)sum_N_GT;
-    acc_COnOff_Recall = (double)sum_COnOff_size / (double)sum_N_TR;
-    acc_COnOff_Fmeasure = 2.0 * (double)sum_COnOff_size / (double)(sum_N_GT + sum_N_TR);
+    acc_COnOff_Precision += (double)sum_COnOff_size / (double)sum_N_GT;
+    acc_COnOff_Recall += (double)sum_COnOff_size / (double)sum_N_TR;
+    acc_COnOff_Fmeasure += 2.0 * (double)sum_COnOff_size / (double)(sum_N_GT + sum_N_TR);
 
-    acc_COnP_Precision = (double)sum_COnP_size / (double)sum_N_GT;
-    acc_COnP_Recall = (double)sum_COnP_size / (double)sum_N_TR;
-    acc_COnP_Fmeasure = 2.0 * (double)sum_COnP_size / (double)(sum_N_GT + sum_N_TR);
+    acc_COnP_Precision += (double)sum_COnP_size / (double)sum_N_GT;
+    acc_COnP_Recall += (double)sum_COnP_size / (double)sum_N_TR;
+    acc_COnP_Fmeasure += 2.0 * (double)sum_COnP_size / (double)(sum_N_GT + sum_N_TR);
 
-    acc_COn_Precision = (double)sum_COn_size / (double)sum_N_GT;
-    acc_COn_Recall = (double)sum_COn_size / (double)sum_N_TR;
-    acc_COn_Fmeasure = 2.0 * (double)sum_COn_size / (double)(sum_N_GT + sum_N_TR);
+    acc_COn_Precision += (double)sum_COn_size / (double)sum_N_GT;
+    acc_COn_Recall += (double)sum_COn_size / (double)sum_N_TR;
+    acc_COn_Fmeasure += 2.0 * (double)sum_COn_size / (double)(sum_N_GT + sum_N_TR);
 
-    acc_OBOn_rate = (double)sum_OBOn_size / (double)sum_N_GT;
-    acc_OBP_rate = (double)sum_OBP_size / (double)sum_N_GT;
-    acc_OBOff_rate = (double)sum_OBOff_size / (double)sum_N_GT;
+    acc_OBOn_rate += (double)sum_OBOn_size / (double)sum_N_GT;
+    acc_OBP_rate += (double)sum_OBP_size / (double)sum_N_GT;
+    acc_OBOff_rate += (double)sum_OBOff_size / (double)sum_N_GT;
 
-    acc_S_rate = (double)sum_S_listgt_size / (double)sum_N_GT;
-    //acc_S_ratio = (double)sum_S_listtr_size / (double)sum_S_listgt_size;
+    acc_S_rate += (double)sum_S_listgt_size / (double)sum_N_GT;
+    //acc_S_ratio += (double)sum_S_listtr_size / (double)sum_S_listgt_size;
 
-    acc_M_rate = (double)sum_M_listgt_size / (double)sum_N_GT;
-    //acc_M_ratio = (double)sum_M_listtr_size / (double)sum_M_listgt_size;
+    acc_M_rate += (double)sum_M_listgt_size / (double)sum_N_GT;
+    //acc_M_ratio += (double)sum_M_listtr_size / (double)sum_M_listgt_size;
 
-    acc_PU_rate = (double)sum_PU_size / (double)sum_N_TR;
-    acc_ND_rate = (double)sum_ND_size / (double)sum_N_GT;
+    acc_PU_rate += (double)sum_PU_size / (double)sum_N_TR;
+    acc_ND_rate += (double)sum_ND_size / (double)sum_N_GT;
   }
   // average scores.
   double avg_COnPOff_Precision = acc_COnPOff_Precision / NFOLD;

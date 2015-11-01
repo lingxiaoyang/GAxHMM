@@ -1,4 +1,4 @@
-NFOLD = 3
+NFOLD = 5
 
 from random import shuffle
 import sys

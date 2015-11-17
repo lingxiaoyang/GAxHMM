@@ -2,16 +2,8 @@ import glob
 import os
 from pylab import *
 
-FEATURES = {
-    0: ("Pitch", ),
-    1: ("Energy", ),
-    2: ("Voicing", ),
-    3: ("Accent", ),
-}
 
-
-
-rcParams['figure.figsize'] = 15, 8
+rcParams['figure.figsize'] = 8, 6
 
 
 def groundtruths2mlf(groundtruthsdir, mlf):
@@ -34,11 +26,10 @@ def groundtruths2mlf(groundtruthsdir, mlf):
                     if len(things) == 3:
                         start = float(things[0])
                         end = float(things[1])
-                        if start - prev < 0.20 and prev >= 0:  # <200ms no break
-                            ##lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
-                            ##lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
-                            lines.append('{0} {1} NOTE'.format(toHTKTime(prev), toHTKTime(end)))
-                        else:    # >200ms break
+                        if start - prev < 0.20 and prev >= 0:  # <200ms SP
+                            lines.append('{0} {1} SP'.format(toHTKTime(prev), toHTKTime(start)))
+                            lines.append('{0} {1} NOTE'.format(toHTKTime(start), toHTKTime(end)))
+                        else:    # >200ms SIL
                             if prev < 0:
                                 prev = 0
                             lines.append('{0} {1} SIL'.format(toHTKTime(prev), toHTKTime(start)))
@@ -272,4 +263,24 @@ def analyze_GArun(GArun_dir):
         sums = map(sum, zip(sums, gene))
     print sums
     bar(range(len_gene), sums)
+    show()
+
+def GA_evolution(*dirs):
+    maxs = [0.0]*101
+    avgs = [0.0]*101
+    for d in dirs:
+        with open(d+os.sep+"evolution.txt") as f:
+            for line in f:
+                g, a, m = line.split()[:3]
+                g = int(g)
+                a = float(a)
+                m = float(m)
+                avgs[g] += a / len(dirs)
+                maxs[g] += m / len(dirs)
+    plot(range(101), avgs, marker="x", label='Average')
+    plot(range(101), maxs, marker="o", label='Best')
+    xlabel('Generation #')
+    ylabel('Correct Onset & Offset (F-measure)')
+    legend(loc=2)
+    #ylim((0, 1.0))
     show()

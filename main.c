@@ -30,8 +30,8 @@
 
 #define cout STD_COUT
 
-#define POPSIZE  96
-#define NGEN     150
+#define POPSIZE  100
+#define NGEN     100
 #define PMUT     0.001
 #define PCROSS   0.9
 
@@ -59,9 +59,11 @@ std::string outer_scp;
 
 #define NOTE_NSTATES       3
 #define SIL_NSTATES        1
+#define SP_NSTATES        1
 
 #define NOTE_NMIXES       1
-#define SIL_NMIXES        1    // SIL for rests
+#define SIL_NMIXES        1
+#define SP_NMIXES         1
 
 #define USE_HTK_FLAVOR     0   // 0 for HTS, 1 for HTK
 //#define LOCAL_SHUFFLE      0
@@ -642,6 +644,38 @@ Objective(GAGenome &g) {
     }
 
 
+    // make proto
+    std::ofstream fproto_sp((working_dir+"/hmm0/proto_sp").c_str());
+    fproto_sp << make_proto(SP_NSTATES, SP_NMIXES, msdInfo, genome, USE_HTK_FLAVOR);
+    fproto_sp.close();
+
+    // HCompV
+    temp.str("");
+    temp << "HCompV"
+         << " -C " << config_file
+         << " -f 0.01"
+         << " -m"
+         << " -S " << FILE_TRAIN
+         << " -M " << working_dir << "/hmm0"
+         << " -o proto_sp.average"
+         << " " << working_dir << "/hmm0/proto_sp";
+    my_system(temp);
+
+    // Build init mmf file
+    {
+      std::ifstream ffeat_proto((working_dir+"/hmm0/proto_sp").c_str());
+      std::string line;
+      std::getline(ffeat_proto, line);
+      ffeat_proto.close();
+      std::ofstream ffeat_init((working_dir+"/hmm0/proto_sp.macro").c_str());
+      ffeat_init << line << "\n";
+      std::ifstream vFloors((working_dir+"/hmm0/vFloors").c_str());
+      while (std::getline(vFloors, line)) {
+        ffeat_init << line << "\n";
+      }
+      ffeat_init.close();
+    }
+
 
     // HInit for all
     temp.str("");
@@ -668,6 +702,19 @@ Objective(GAGenome &g) {
          << " -S " << inner_scp
          << " -w 5000"
          << " " << working_dir << "/hmm0/proto_sil";
+    my_system(temp);
+
+    temp.str("");
+    temp << HTK_PATH_PREFIX << "HInit"
+         << " -C " << config_file
+         << " -H " << working_dir << "/hmm0/proto_sp.macro"
+         << " -M " << working_dir << "/hmm0"
+         << " -I " << FILE_GROUNDTRUTH
+         << " -l SP"
+         << " -o SP"
+         << " -S " << inner_scp
+         << " -w 5000"
+         << " " << working_dir << "/hmm0/proto_sp";
     my_system(temp);
 
     // HHEd   make a monophone mmf (feat)
@@ -712,7 +759,7 @@ Objective(GAGenome &g) {
     my_system(temp);
 
     // HERest (1->2) ////////////////////////
-    my_system(cmd_mkdir + working_dir + "/hmm2");
+    my_system(cmd_mkdir + working_dir + "/hmm3");
     temp.str("");
     temp << HTK_PATH_PREFIX << "HERest"
          << " -C " << config_file
@@ -721,11 +768,11 @@ Objective(GAGenome &g) {
          << " -S " << inner_scp
          << " -H " << working_dir << "/hmm1/feat.monophones"
       //<< " -N " << working_dir << "/hmm0/dur.monophones"
-         << " -M " << working_dir << "/hmm2"
+         << " -M " << working_dir << "/hmm3"
       //<< "  monophones"
          << " " << FILE_MONOPHONES;
     my_system(temp);
-
+    /*
     // HERest (2->3) ////////////////////////
     my_system(cmd_mkdir + working_dir + "/hmm3");
     temp.str("");
@@ -740,7 +787,7 @@ Objective(GAGenome &g) {
       //<< "  monophones"
          << " " << FILE_MONOPHONES;
     my_system(temp);
-
+    */
 
     // HVite generate test set ////////////////////
     temp.str("");
@@ -925,7 +972,7 @@ Objective(GAGenome &g) {
     log(temp.str());
     //}
 
-  return avg_COnOff_Precision;
+  return avg_COnPOff_Fmeasure;
 }
 
 

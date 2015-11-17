@@ -1,4 +1,4 @@
-NFOLD = 5
+NFOLD = 3
 
 from random import shuffle
 import sys
@@ -44,7 +44,7 @@ if __name__ == "__main__":
       for i in range(NFOLD):
         train_scp = "TEMP_{0}_fold{1}_train.scp".format(name, i+1)
         test_scp = "TEMP_{0}_fold{1}_test.scp".format(name, i+1)
-        os.system("mpirun -np 8 a.out {0}_fold{1} {2} {3}".format(name, i+1, i*1000, train_scp))
+        os.system("mpirun -np 4 a.out {0}_fold{1} {2} {3}".format(name, i+1, i*1000, train_scp))
 
     for i in range(NFOLD):
         train_scp = "TEMP_{0}_fold{1}_train.scp".format(name, i+1)
